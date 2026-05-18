@@ -1,0 +1,5 @@
+# Linux container artifacts — force LF, never CRLF, regardless of host autocrlf.
+# s6-overlay rejects type/notification-fd files containing a trailing CR.
+root/** text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf

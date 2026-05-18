@@ -1,0 +1,20 @@
+#!/usr/bin/with-contenv bash
+
+cmd=(/usr/local/bin/usque socks
+     -c /config/config.json
+     -b 0.0.0.0
+     -p "${SOCKS5_PORT}")
+
+[ -n "$USERNAME" ] && cmd+=(-u "$USERNAME")
+[ -n "$PASSWORD" ] && cmd+=(-w "$PASSWORD")
+
+# DNS=1.1.1.1,1.0.0.1  -> -d 1.1.1.1 -d 1.0.0.1
+if [ -n "$DNS" ]; then
+  IFS=',' read -ra _dns <<<"$DNS"
+  for d in "${_dns[@]}"; do cmd+=(-d "$d"); done
+fi
+
+# Force HTTP/2 fallback when QUIC/UDP is blocked.
+[ "$USE_HTTP2" = "true" ] && cmd+=(--http2)
+
+exec s6-setuidgid abc "${cmd[@]}"

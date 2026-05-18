@@ -1,0 +1,17 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+CONFIG=/config/config.json
+
+if [ ! -e "$CONFIG" ]; then
+  echo "*** usque: registering a new free WARP account..."
+  cd /config
+  if [ -n "$DEVICE_NAME" ]; then
+    /usr/local/bin/usque register -n "$DEVICE_NAME" --accept-tos
+  else
+    /usr/local/bin/usque register --accept-tos
+  fi
+fi
+
+# permissions — service runs as abc:abc (uid 911 by default)
+chown -R abc:abc /config

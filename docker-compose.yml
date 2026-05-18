@@ -1,0 +1,11 @@
+services:
+  warp-masque:
+    image: ghcr.io/akumaginkou/warp-masque:latest
+    restart: always
+    environment:
+      - HTTP_PORT=1081
+    volumes:
+      - ./config:/config
+    ports:
+      - 127.0.0.1:1080:1080
+      - 127.0.0.1:1081:1081

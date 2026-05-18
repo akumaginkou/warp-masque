@@ -1,0 +1,24 @@
+#!/usr/bin/with-contenv bash
+
+# Opt-in: only start the HTTP CONNECT proxy if HTTP_PORT is set.
+if [ -z "$HTTP_PORT" ]; then
+    s6-svc -d .
+    exit 0
+fi
+
+cmd=(/usr/local/bin/usque http-proxy
+     -c /config/config.json
+     -b 0.0.0.0
+     -p "${HTTP_PORT}")
+
+[ -n "$USERNAME" ] && cmd+=(-u "$USERNAME")
+[ -n "$PASSWORD" ] && cmd+=(-w "$PASSWORD")
+
+if [ -n "$DNS" ]; then
+  IFS=',' read -ra _dns <<<"$DNS"
+  for d in "${_dns[@]}"; do cmd+=(-d "$d"); done
+fi
+
+[ "$USE_HTTP2" = "true" ] && cmd+=(--http2)
+
+exec s6-setuidgid abc "${cmd[@]}"

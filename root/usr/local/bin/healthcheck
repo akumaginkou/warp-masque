@@ -1,0 +1,12 @@
+#!/bin/bash
+TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
+
+if [[ -n "${USERNAME:-}" ]] && [[ -n "${PASSWORD:-}" ]]; then
+    /usr/bin/curl --silent --fail --max-time 5 -o /dev/null \
+        --proxy "socks5h://${USERNAME}:${PASSWORD}@127.0.0.1:${SOCKS5_PORT}" "${TEST_URL}" || exit 1
+else
+    /usr/bin/curl --silent --fail --max-time 5 -o /dev/null \
+        --proxy "socks5h://127.0.0.1:${SOCKS5_PORT}" "${TEST_URL}" || exit 1
+fi
+
+exit 0
