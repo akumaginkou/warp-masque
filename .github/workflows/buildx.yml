@@ -47,7 +47,20 @@ jobs:
             .
           CID=$(docker run -d ${{ env.IMAGE_NAME }}:testing)
           sleep 5s
-          if [ $(docker exec -i $CID usque --help | head -1 | cut -d ' ' -f1) != "usque" ]; then
+          if ! docker exec -i $CID usque version >/dev/null 2>&1; then
+            echo "::error::usque version subcommand failed"
+            docker logs $CID
+            exit 1
+          fi
+          # Wait up to 30s for the SOCKS5 listener + healthcheck to come up.
+          for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' $CID 2>/dev/null || echo unknown)
+            echo "[$i] health=$status"
+            [ "$status" = "healthy" ] && break
+            sleep 1
+          done
+          if [ "$status" != "healthy" ]; then
+            echo "::error::container did not become healthy"
             docker logs $CID
             exit 1
           fi
