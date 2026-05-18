@@ -34,7 +34,7 @@ LABEL org.opencontainers.image.description="Cloudflare WARP as a SOCKS5/HTTP pro
 
 COPY --from=collector /bar/ /
 
-RUN apk add --no-cache curl haproxy
+RUN apk add --no-cache curl haproxy iproute2
 
 ENV \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \

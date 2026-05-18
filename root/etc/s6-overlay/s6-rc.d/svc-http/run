@@ -1,9 +1,9 @@
 #!/usr/bin/with-contenv bash
 
 # Opt-in: only run the HTTP CONNECT proxy when HTTP_PORT is set,
-# AND only in single-account mode (the pool/HAProxy handles HTTP
-# fanout when ACCOUNT_COUNT>=2).
-if [ -z "$HTTP_PORT" ] || [ "${ACCOUNT_COUNT:-1}" -ge 2 ]; then
+# AND only in single-account proxy mode (pool/HAProxy handles HTTP
+# fanout when ACCOUNT_COUNT>=2, and TUN mode has no proxy at all).
+if [ -z "$HTTP_PORT" ] || [ "${ACCOUNT_COUNT:-1}" -ge 2 ] || [ "${MODE:-proxy}" = "tun" ]; then
     s6-svc -d .
     exit 0
 fi

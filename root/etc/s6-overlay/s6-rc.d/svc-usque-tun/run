@@ -1,0 +1,31 @@
+#!/usr/bin/with-contenv bash
+
+if [ "${MODE:-proxy}" != "tun" ]; then
+    s6-svc -d .
+    exit 0
+fi
+
+# Container needs:
+#   --cap-add=NET_ADMIN
+#   --device=/dev/net/tun
+# (or --privileged), otherwise nativetun fails to open /dev/net/tun.
+if [ ! -e /dev/net/tun ]; then
+    echo "*** usque-tun: /dev/net/tun missing — run with --device=/dev/net/tun" >&2
+    sleep 30
+    exit 1
+fi
+
+cmd=(/usr/local/bin/usque nativetun -c /config/config.json)
+
+[ "$USE_HTTP2" = "true" ] && cmd+=(--http2)
+
+# Optional user-supplied lifecycle hooks. These are run by usque when
+# the tunnel comes up / goes down — the canonical place to drop
+# `ip route add` invocations since usque deliberately doesn't manage
+# routing itself.
+[ -x /config/on-connect.sh    ] && cmd+=(--on-connect    /config/on-connect.sh)
+[ -x /config/on-disconnect.sh ] && cmd+=(--on-disconnect /config/on-disconnect.sh)
+
+# nativetun has to run as root (TUN device + iproute2). The proxy
+# modes run as abc:abc instead; tun is the exception.
+exec "${cmd[@]}"

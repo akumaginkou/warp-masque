@@ -1,0 +1,93 @@
+#!/usr/bin/with-contenv bash
+#
+# Periodic identity rotation. With N pooled accounts, this picks one
+# slot per interval, re-registers a fresh free account into a temp
+# file, atomically moves it over the existing slot config, and signals
+# the corresponding usque worker to restart. The per-worker restart
+# loop in svc-usque-pool then picks up the new config within ~1s.
+#
+# HAProxy doesn't need a reload — backend ports stay the same. Its
+# per-backend health checks see the worker briefly go DOWN, mark it
+# back UP on the next successful TCP check, and option redispatch
+# masks any in-flight requests.
+
+set -u
+
+N="${ACCOUNT_COUNT:-1}"
+INTERVAL_RAW="${ROTATE_INTERVAL:-}"
+
+# Disable unless pooling AND interval is set.
+if [ "$N" -lt 2 ] || [ -z "$INTERVAL_RAW" ] || [ "${MODE:-proxy}" = "tun" ]; then
+    s6-svc -d .
+    exit 0
+fi
+
+# Parse "24h", "30m", "300s", "1h30m", or bare seconds.
+parse_interval() {
+    local s="$1" total=0
+    if [[ "$s" =~ ^[0-9]+$ ]]; then
+        echo "$s"; return 0
+    fi
+    while [[ "$s" =~ ^([0-9]+)([hms])(.*)$ ]]; do
+        local n="${BASH_REMATCH[1]}" u="${BASH_REMATCH[2]}"
+        case "$u" in
+            h) total=$((total + n*3600));;
+            m) total=$((total + n*60));;
+            s) total=$((total + n));;
+        esac
+        s="${BASH_REMATCH[3]}"
+    done
+    if [ -n "$s" ] || [ "$total" -eq 0 ]; then
+        echo 0; return 1
+    fi
+    echo "$total"
+}
+
+INTERVAL=$(parse_interval "$INTERVAL_RAW") || {
+    echo "*** rotator: invalid ROTATE_INTERVAL='${INTERVAL_RAW}'; disabling" >&2
+    s6-svc -d .
+    exit 0
+}
+# 60s floor — Cloudflare doesn't appreciate sub-minute registration loops.
+[ "$INTERVAL" -lt 60 ] && { echo "*** rotator: clamping ROTATE_INTERVAL to 60s minimum" >&2; INTERVAL=60; }
+
+STATE=/config/rotator.state
+[ -e "$STATE" ] || echo 0 > "$STATE"
+
+config_for() {
+    if [ "$1" = "1" ]; then echo /config/config.json
+    else echo /config/config-$1.json
+    fi
+}
+
+echo "*** rotator: every ${INTERVAL}s across ${N} slots"
+
+while true; do
+    sleep "$INTERVAL"
+
+    last=$(cat "$STATE" 2>/dev/null || echo 0)
+    slot=$(( (last % N) + 1 ))
+    cfg=$(config_for "$slot")
+    tmp="/config/.rotate-tmp.${slot}.$$"
+    name="${DEVICE_NAME:+${DEVICE_NAME}-${slot}}"
+
+    echo "*** rotator: rotating slot ${slot} (${cfg})"
+    if [ -n "$name" ]; then
+        /usr/local/bin/usque register --accept-tos -c "$tmp" -n "${name}-r$(date +%s)" \
+            || { echo "*** rotator: register failed for slot ${slot}; will retry next cycle" >&2; rm -f "$tmp"; continue; }
+    else
+        /usr/local/bin/usque register --accept-tos -c "$tmp" \
+            || { echo "*** rotator: register failed for slot ${slot}; will retry next cycle" >&2; rm -f "$tmp"; continue; }
+    fi
+
+    mv -f "$tmp" "$cfg"
+    chown abc:abc "$cfg"
+    echo "$slot" > "$STATE"
+
+    socks_port=$((11000+slot))
+    http_port=$((12000+slot))
+    pkill -f "usque socks.*-p ${socks_port}\b"    || true
+    pkill -f "usque http-proxy.*-p ${http_port}\b" || true
+
+    echo "*** rotator: slot ${slot} updated, workers signalled to restart"
+done

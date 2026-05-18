@@ -1,8 +1,8 @@
 #!/usr/bin/with-contenv bash
 
-# When ACCOUNT_COUNT>=2 the pool + HAProxy take over the public port,
-# so the standalone single-account listener must step aside.
-if [ "${ACCOUNT_COUNT:-1}" -ge 2 ]; then
+# Step aside when pool mode is on (HAProxy fronts the public port)
+# or when MODE=tun is in charge.
+if [ "${ACCOUNT_COUNT:-1}" -ge 2 ] || [ "${MODE:-proxy}" = "tun" ]; then
     s6-svc -d .
     exit 0
 fi

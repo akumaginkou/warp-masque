@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bash
 
-if [ "${ACCOUNT_COUNT:-1}" -lt 2 ]; then
+if [ "${ACCOUNT_COUNT:-1}" -lt 2 ] || [ "${MODE:-proxy}" = "tun" ]; then
     # No pooling needed; HAProxy stays down.
     s6-svc -d .
     exit 0

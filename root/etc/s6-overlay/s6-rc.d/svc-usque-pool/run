@@ -1,8 +1,9 @@
 #!/usr/bin/with-contenv bash
 
 N="${ACCOUNT_COUNT:-1}"
-if [ "$N" -lt 2 ]; then
-    # Single-account mode: svc-socks/svc-http handle traffic directly.
+if [ "$N" -lt 2 ] || [ "${MODE:-proxy}" = "tun" ]; then
+    # Single-account proxy: svc-socks/svc-http handle traffic directly.
+    # TUN mode: svc-usque-tun owns the tunnel; no pool.
     s6-svc -d .
     exit 0
 fi

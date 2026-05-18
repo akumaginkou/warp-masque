@@ -12,6 +12,16 @@
 
 set -u
 
+# TUN mode: nothing to probe via SOCKS5. As long as the tun
+# interface exists, declare healthy. The user owns routing.
+if [ "${MODE:-proxy}" = "tun" ]; then
+    if /sbin/ip link show | grep -qE '(tun[0-9]+|usque)' 2>/dev/null; then
+        exit 0
+    fi
+    echo "healthcheck: no tun/usque interface present" >&2
+    exit 1
+fi
+
 TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
 SOCKS_AUTH=""
 if [[ -n "${USERNAME:-}" ]] && [[ -n "${PASSWORD:-}" ]]; then

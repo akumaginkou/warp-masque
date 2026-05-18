@@ -19,6 +19,9 @@ on:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # Opt in to Node.js 24 ahead of the 2026-06-02 default flip so the
+  # deprecation banner stops firing on every run.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   buildx:
@@ -88,5 +91,5 @@ jobs:
           file: Dockerfile
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true

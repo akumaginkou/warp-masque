@@ -27,21 +27,45 @@ register_one() {
   fi
 }
 
-# Slot 1 is always config.json (preserves single-account semantics +
-# upgrade path from v1 deployments).
+# Slot 1 (config.json) is required by every mode — TUN reads it too,
+# and pool slot 1 reuses it for back-compat with single-account
+# deployments.
 register_one /config/config.json "${DEVICE_NAME}"
 
 # Pool members 2..N go to config-2.json .. config-N.json. Sleep
 # briefly between calls to be polite to api.cloudflareclient.com.
-if [ "$N" -ge 2 ]; then
+# Pool only meaningful in proxy mode; TUN runs a single tunnel.
+if [ "${MODE:-proxy}" != "tun" ] && [ "$N" -ge 2 ]; then
   for i in $(seq 2 "$N"); do
     register_one "/config/config-${i}.json" "${DEVICE_NAME:+${DEVICE_NAME}-${i}}"
     sleep 1
   done
 fi
 
-# Generate /config/haproxy.cfg when pooling.
-if [ "$N" -ge 2 ]; then
+# Generate /config/haproxy.cfg when pooling (proxy mode only).
+if [ "${MODE:-proxy}" != "tun" ] && [ "$N" -ge 2 ]; then
+  # ---- preamble: tunables that depend on optional features
+  RATE_LIMIT_SECTION=""
+  if [ -n "${RATE_LIMIT_PER_IP:-}" ]; then
+    RATE_LIMIT_SECTION=$(cat <<RL
+    stick-table type ip size 100k expire 60s store conn_rate(10s)
+    tcp-request connection track-sc0 src
+    tcp-request connection reject if { sc_conn_rate(0) gt ${RATE_LIMIT_PER_IP} }
+RL
+)
+  fi
+
+  ACL_SECTION=""
+  if [ -n "${ALLOW_CIDR:-}" ]; then
+    acl_lines=""
+    IFS=',' read -ra _cidrs <<<"$ALLOW_CIDR"
+    for c in "${_cidrs[@]}"; do
+      acl_lines+="    acl allowed_src src ${c}
+"
+    done
+    ACL_SECTION="${acl_lines}    tcp-request connection reject if !allowed_src"
+  fi
+
   cat > /config/haproxy.cfg <<HEAD
 global
     log stdout format raw daemon info
@@ -60,26 +84,36 @@ defaults
 
 frontend socks5_in
     bind *:${SOCKS5_PORT}
-    default_backend socks5_pool
+HEAD
+  [ -n "$ACL_SECTION" ]         && printf '%s\n' "$ACL_SECTION"         >> /config/haproxy.cfg
+  [ -n "$RATE_LIMIT_SECTION" ]  && printf '%s\n' "$RATE_LIMIT_SECTION"  >> /config/haproxy.cfg
+  echo "    default_backend socks5_pool" >> /config/haproxy.cfg
+
+  cat >> /config/haproxy.cfg <<SBE
 
 backend socks5_pool
     balance roundrobin
-HEAD
+SBE
   echo "    server u1 127.0.0.1:11001 check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
   for i in $(seq 2 "$N"); do
     echo "    server u${i} 127.0.0.1:$((11000+i)) check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
   done
 
   if [ -n "$HTTP_PORT" ]; then
-    cat >> /config/haproxy.cfg <<HTTPF
+    cat >> /config/haproxy.cfg <<HF
 
 frontend http_in
     bind *:${HTTP_PORT}
-    default_backend http_pool
+HF
+    [ -n "$ACL_SECTION" ]        && printf '%s\n' "$ACL_SECTION"         >> /config/haproxy.cfg
+    [ -n "$RATE_LIMIT_SECTION" ] && printf '%s\n' "$RATE_LIMIT_SECTION"  >> /config/haproxy.cfg
+    echo "    default_backend http_pool" >> /config/haproxy.cfg
+
+    cat >> /config/haproxy.cfg <<HBE
 
 backend http_pool
     balance roundrobin
-HTTPF
+HBE
     echo "    server u1 127.0.0.1:12001 check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
     for i in $(seq 2 "$N"); do
       echo "    server u${i} 127.0.0.1:$((12000+i)) check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
@@ -102,6 +136,18 @@ STATSF
     if [ -n "$HAPROXY_STATS_USER" ] && [ -n "$HAPROXY_STATS_PASS" ]; then
       printf '    stats auth %s:%s\n' "$HAPROXY_STATS_USER" "$HAPROXY_STATS_PASS" >> /config/haproxy.cfg
     fi
+  fi
+
+  if [ -n "$HAPROXY_METRICS_PORT" ]; then
+    cat >> /config/haproxy.cfg <<METRICSF
+
+frontend metrics_front
+    bind *:${HAPROXY_METRICS_PORT}
+    mode http
+    no log
+    http-request use-service prometheus-exporter if { path /metrics }
+    http-request return status 404
+METRICSF
   fi
 fi
 
