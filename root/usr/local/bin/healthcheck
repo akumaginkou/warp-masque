@@ -1,12 +1,44 @@
 #!/bin/bash
-TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
+# Exit 0  -> container healthy
+# Exit 1  -> container unhealthy
+#
+# Two-tier check:
+#   1. End-to-end SOCKS5 reachability through the public listener.
+#      Validates the path that real clients use. Always run.
+#   2. Pool mode (ACCOUNT_COUNT>=2): TCP-probe each worker's internal
+#      port so a silently-dead backend gets flagged. Allows up to half
+#      the pool to be dead before failing the container — the surviving
+#      majority can still carry traffic via HAProxy redispatch.
 
+set -u
+
+TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
+SOCKS_AUTH=""
 if [[ -n "${USERNAME:-}" ]] && [[ -n "${PASSWORD:-}" ]]; then
-    /usr/bin/curl --silent --fail --max-time 5 -o /dev/null \
-        --proxy "socks5h://${USERNAME}:${PASSWORD}@127.0.0.1:${SOCKS5_PORT}" "${TEST_URL}" || exit 1
-else
-    /usr/bin/curl --silent --fail --max-time 5 -o /dev/null \
-        --proxy "socks5h://127.0.0.1:${SOCKS5_PORT}" "${TEST_URL}" || exit 1
+    SOCKS_AUTH="${USERNAME}:${PASSWORD}@"
+fi
+
+if ! /usr/bin/curl --silent --fail --max-time 5 -o /dev/null \
+        --proxy "socks5h://${SOCKS_AUTH}127.0.0.1:${SOCKS5_PORT}" "$TEST_URL"; then
+    echo "healthcheck: public SOCKS5 e2e probe failed" >&2
+    exit 1
+fi
+
+N="${ACCOUNT_COUNT:-1}"
+if [ "$N" -ge 2 ]; then
+    dead=0
+    for i in $(seq 1 "$N"); do
+        port=$((11000 + i))
+        if ! timeout 2 bash -c ": </dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
+            dead=$((dead + 1))
+            echo "healthcheck: pool worker u${i} (port ${port}) not listening" >&2
+        fi
+    done
+    threshold=$(( N / 2 ))
+    if [ "$dead" -gt "$threshold" ]; then
+        echo "healthcheck: ${dead}/${N} workers dead (threshold ${threshold})" >&2
+        exit 1
+    fi
 fi
 
 exit 0

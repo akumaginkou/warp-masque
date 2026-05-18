@@ -7,9 +7,8 @@ if [ "$N" -lt 2 ]; then
     exit 0
 fi
 
-# Build the per-instance argv tail (auth, DNS, http2). Shared by all
-# pool members since they speak the same SOCKS5/HTTP interface to
-# HAProxy.
+# Build the per-instance argv tail (auth, DNS, http2). All pool members
+# share the same SOCKS5/HTTP surface seen by HAProxy.
 socks_tail=()
 http_tail=()
 [ -n "$USERNAME" ] && { socks_tail+=(-u "$USERNAME"); http_tail+=(-u "$USERNAME"); }
@@ -26,38 +25,52 @@ if [ "$USE_HTTP2" = "true" ]; then
     http_tail+=(--http2)
 fi
 
-pids=()
-cleanup() { kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null || true; }
-trap 'cleanup; exit 0' TERM INT
-trap 'cleanup' EXIT
-
 config_for() {
     if [ "$1" = "1" ]; then echo /config/config.json
     else echo /config/config-$1.json
     fi
 }
 
+# Each worker gets its own restart loop in a background subshell so a
+# single misbehaving usque process doesn't take down the rest of the
+# pool. Exponential backoff caps at 30s.
+worker_loop() {
+    local label="$1"
+    shift
+    local backoff=1
+    while true; do
+        echo "*** ${label}: starting" >&2
+        "$@"
+        local rc=$?
+        echo "*** ${label}: exited rc=${rc}; restarting in ${backoff}s" >&2
+        sleep "$backoff"
+        backoff=$(( backoff * 2 ))
+        [ "$backoff" -gt 30 ] && backoff=30
+    done
+}
+
+pids=()
+cleanup() { kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null || true; }
+trap 'cleanup; exit 0' TERM INT
+trap 'cleanup' EXIT
+
 for i in $(seq 1 "$N"); do
     cfg=$(config_for "$i")
     socks_port=$((11000+i))
-    echo "*** usque-pool: starting socks worker $i on 127.0.0.1:${socks_port} (${cfg})"
-    s6-setuidgid abc /usr/local/bin/usque socks \
+    worker_loop "usque socks #$i" \
+        s6-setuidgid abc /usr/local/bin/usque socks \
         -c "$cfg" -b 127.0.0.1 -p "$socks_port" "${socks_tail[@]}" &
     pids+=("$!")
 
     if [ -n "$HTTP_PORT" ]; then
         http_port=$((12000+i))
-        echo "*** usque-pool: starting http worker $i on 127.0.0.1:${http_port}"
-        s6-setuidgid abc /usr/local/bin/usque http-proxy \
+        worker_loop "usque http #$i" \
+            s6-setuidgid abc /usr/local/bin/usque http-proxy \
             -c "$cfg" -b 127.0.0.1 -p "$http_port" "${http_tail[@]}" &
         pids+=("$!")
     fi
 done
 
-# Wait for any one to exit, then have s6 restart the whole pool.
-# HAProxy's per-backend health checks + redispatch keep clients
-# unaffected during the brief restart window.
-wait -n
-echo "*** usque-pool: a worker exited; cycling the pool" >&2
-cleanup
-exit 1
+# Block until the supervisor itself is signalled. The worker loops keep
+# restarting individual usque processes without disturbing siblings.
+wait

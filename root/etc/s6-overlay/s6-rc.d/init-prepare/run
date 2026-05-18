@@ -85,6 +85,24 @@ HTTPF
       echo "    server u${i} 127.0.0.1:$((12000+i)) check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
     done
   fi
+
+  if [ -n "$HAPROXY_STATS_PORT" ]; then
+    cat >> /config/haproxy.cfg <<STATSF
+
+frontend stats_front
+    bind *:${HAPROXY_STATS_PORT}
+    mode http
+    no log
+    stats enable
+    stats uri /
+    stats refresh 5s
+    stats show-legends
+    stats show-node
+STATSF
+    if [ -n "$HAPROXY_STATS_USER" ] && [ -n "$HAPROXY_STATS_PASS" ]; then
+      printf '    stats auth %s:%s\n' "$HAPROXY_STATS_USER" "$HAPROXY_STATS_PASS" >> /config/haproxy.cfg
+    fi
+  fi
 fi
 
 chown -R abc:abc /config

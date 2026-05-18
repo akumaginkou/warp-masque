@@ -51,6 +51,8 @@ On first boot the container runs `usque register` and writes `/config/config.jso
 | `USE_HTTP2` | `true` to force HTTP/2 over TCP+TLS (use when QUIC is blocked) | `false` |
 | `DEVICE_NAME` | Friendly name passed to `usque register -n` on first boot. With pooling, account #i gets `${DEVICE_NAME}-${i}` | (unset) |
 | `ACCOUNT_COUNT` | Provision N free accounts and pool them behind an internal HAProxy (TCP roundrobin + per-backend failover). `1` = legacy single-account mode. | `1` |
+| `HAPROXY_STATS_PORT` | Pool mode only. If set, expose HAProxy's stats page on this port (HTTP, plain). Pair with `HAPROXY_STATS_USER`/`HAPROXY_STATS_PASS` for Basic auth. | (unset, disabled) |
+| `HAPROXY_STATS_USER` / `HAPROXY_STATS_PASS` | Optional Basic auth credentials for the stats page. | (unset) |
 | `TZ` | Container timezone | `UTC` |
 
 ## Multi-account pooling
@@ -78,6 +80,19 @@ Internally:
 - Account #1 stays in `/config/config.json` (so upgrades from single-account deployments keep working); accounts #2..N live in `/config/config-{2..N}.json`.
 
 `N=1` (the default) bypasses HAProxy entirely and binds `usque` directly to the public ports — no extra hop, no behavior change from the single-account image.
+
+Each worker has its own restart loop with exponential backoff (up to 30 s), so a single misbehaving `usque` process no longer takes down the rest of the pool while it cycles.
+
+### Observability
+
+When `HAPROXY_STATS_PORT` is set in pool mode, HAProxy's built-in stats page is published on that port. Open `http://host:${HAPROXY_STATS_PORT}/` to see per-backend session counts, bytes in/out, last health-check result, and the current up/down state. Add Basic auth with `HAPROXY_STATS_USER` and `HAPROXY_STATS_PASS` before exposing the port publicly.
+
+### Healthcheck
+
+The container HEALTHCHECK validates two things:
+
+1. The public SOCKS5 listener can complete a real request to `cloudflare.com/cdn-cgi/trace`.
+2. In pool mode, each worker's internal port is still accepting TCP. Up to ⌊N/2⌋ dead workers are tolerated; the container only flips to `unhealthy` once a majority of the pool has stopped listening. This avoids container restart cascades when individual workers are transiently down — HAProxy redispatch keeps user-visible behavior intact during the survivors' lifetime.
 
 ## Verifying
 
