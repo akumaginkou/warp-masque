@@ -46,21 +46,28 @@ jobs:
             --load \
             .
           CID=$(docker run -d ${{ env.IMAGE_NAME }}:testing)
-          sleep 5s
+          sleep 8s
           if ! docker exec -i $CID usque version >/dev/null 2>&1; then
             echo "::error::usque version subcommand failed"
             docker logs $CID
             exit 1
           fi
-          # Wait up to 30s for the SOCKS5 listener + healthcheck to come up.
-          for i in $(seq 1 30); do
-            status=$(docker inspect --format '{{.State.Health.Status}}' $CID 2>/dev/null || echo unknown)
-            echo "[$i] health=$status"
-            [ "$status" = "healthy" ] && break
-            sleep 1
+          # Poll the SOCKS5 listener directly — faster and more meaningful
+          # than waiting for the 25s HEALTHCHECK interval to first fire.
+          ok=
+          for i in $(seq 1 12); do
+            if docker exec -i $CID curl -sf --max-time 8 \
+                 -x socks5h://127.0.0.1:1080 \
+                 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'; then
+              ok=1
+              echo "[$i] SOCKS5 -> warp=on"
+              break
+            fi
+            echo "[$i] not ready yet"
+            sleep 3
           done
-          if [ "$status" != "healthy" ]; then
-            echo "::error::container did not become healthy"
+          if [ -z "$ok" ]; then
+            echo "::error::SOCKS5 did not reach warp=on within 36s"
             docker logs $CID
             exit 1
           fi
