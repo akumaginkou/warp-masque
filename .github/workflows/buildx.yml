@@ -7,12 +7,14 @@ on:
       - 'main'
     paths-ignore:
       - 'README.md'
+      - 'README.ja.md'
       - 'docker-compose.yml'
   pull_request:
     branches:
       - 'main'
     paths-ignore:
       - 'README.md'
+      - 'README.ja.md'
       - 'docker-compose.yml'
 
 env:

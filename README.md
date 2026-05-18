@@ -1,5 +1,7 @@
 # warp-masque
 
+English | [日本語](README.ja.md)
+
 Cloudflare WARP as a SOCKS5/HTTP proxy, spoken over **MASQUE/HTTP/3** — the same protocol Cloudflare's 1.1.1.1 mobile app uses. Drops in where WireGuard-based wrappers get blocked by UDP/DPI filters, with an HTTP/2-over-TLS fallback when QUIC is unreachable. An opt-in pool mode runs N independent free WARP accounts in parallel behind HAProxy for rate-limit distribution and automatic failover.
 
 Built on [`Diniboy1123/usque`](https://github.com/Diniboy1123/usque) (Go MASQUE/WARP client) and `linuxserver/baseimage-alpine` + `s6-overlay`.
