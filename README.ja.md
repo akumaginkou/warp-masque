@@ -104,7 +104,7 @@ services:
 
 ## 制約 / Caveats
 
-- **接続単位の roundrobin** であってリクエスト単位ではない。長寿命の SOCKS5 接続は同じ backend を使い続ける
+- **接続単位の振り分け**。新しい TCP 接続ごとに次の backend が選ばれる。SOCKS5 は target ごとに 1 本 TCP を開く設計で多重化しないので、ブラウザのセッションも `curl` のループもダウンロードマネージャも、**実質的に outbound stream 単位で別アカウントになる**。1 つの接続が同じ backend に留まるのは次の 2 ケースだけで、いずれも途中で backend を切り替えると壊れるので意図通り: 長寿命の TCP ストリーム (FTP コントロール、SSH、SOCKS5 上にトンネリングした TLS など) と、1 つの HTTP CONNECT トンネル内での HTTP/2 多重化 (ブラウザが同一 origin への HTTPS で 1 本の CONNECT を使い回すと、その HTTP/2 リクエストは全部その backend に張り付く)
 - **egress IP = アカウント数とは限らない**。Cloudflare 側で egress IP がプール化されているため、別アカウントでも同じ WARP edge IP に出ることがある
 - **有料 WARP+ ライセンスキー注入は未対応**。upstream usque の [issue #87](https://github.com/Diniboy1123/usque/issues/87) を追跡中
 - **identity 自動ローテーションはまだ無い**。アカウントは `config*.json` を消すまで持続

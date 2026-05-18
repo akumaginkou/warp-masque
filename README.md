@@ -104,7 +104,7 @@ The container `HEALTHCHECK` runs every 25 s and combines:
 
 ## Caveats
 
-- **Connection-level roundrobin**, not request-level. A long-lived SOCKS5 connection stays on the same backend for its lifetime.
+- **Connection-level distribution.** Each new TCP connection picks the next backend. SOCKS5 opens one TCP socket per target host with no multiplexing, so a browser session, a `curl` loop, or a download manager already gets a different account per outbound stream. Two cases keep a single connection pinned to one backend for its lifetime — by design, since rebalancing mid-stream would break the session: a long-lived TCP stream (FTP control, SSH, SOCKS5-tunneled TLS), and HTTP/2 multiplexing inside one HTTP CONNECT tunnel (a browser reusing one CONNECT to one origin will pin all multiplexed requests to that backend).
 - **Egress IP ≠ account identity**. Cloudflare pools egress IPs internally; two of your accounts may surface from the same WARP edge address.
 - **Paid WARP+ license keys** aren't supported yet — tracking [usque#87](https://github.com/Diniboy1123/usque/issues/87).
 - **No identity rotation** in this version. Accounts persist until you delete the corresponding `config*.json` from the volume.
