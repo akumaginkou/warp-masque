@@ -1,63 +1,66 @@
 # warp-masque
 
-Cloudflare WARP as a SOCKS5/HTTP proxy, spoken over **MASQUE/HTTP/3** — the same protocol Cloudflare's own 1.1.1.1 mobile app uses. Drops in where WireGuard-based wrappers (e.g. wireproxy) get blocked by UDP/DPI filters, and falls back to HTTP/2 when QUIC is unreachable.
+Cloudflare WARP as a SOCKS5/HTTP proxy, spoken over **MASQUE/HTTP/3** — the same protocol Cloudflare's 1.1.1.1 mobile app uses. Drops in where WireGuard-based wrappers get blocked by UDP/DPI filters, with an HTTP/2-over-TLS fallback when QUIC is unreachable. An opt-in pool mode runs N independent free WARP accounts in parallel behind HAProxy for rate-limit distribution and automatic failover.
 
-Built on:
-- [`Diniboy1123/usque`](https://github.com/Diniboy1123/usque) — Go implementation of WARP over MASQUE.
-- `linuxserver/baseimage-alpine` + `s6-overlay` for supervision.
+Built on [`Diniboy1123/usque`](https://github.com/Diniboy1123/usque) (Go MASQUE/WARP client) and `linuxserver/baseimage-alpine` + `s6-overlay`.
 
-## Why not warproxy?
-
-- The classic WireGuard/UDP transport (wireproxy + wgcf) is blocked on a growing number of corporate, mobile, and airline networks.
-- The WARP+ referral program that wgcf-based images farmed for extra quota was **terminated by Cloudflare on 2024-11-01** (API error `1070`). Free WARP itself still works.
-- MASQUE/HTTP3 is what the official Cloudflare app falls through to first; HTTP/2 over TCP is a final fallback.
-
-## Usage
+## Quickstart
 
 ```sh
 docker run -d --name warp-masque \
   -p 1080:1080 \
-  -v $PWD/config:/config \
+  -v "$PWD/config:/config" \
   ghcr.io/akumaginkou/warp-masque:latest
+
+curl -x socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace
+# expect: warp=on
 ```
 
-or `docker-compose`:
+First boot runs `usque register` and writes `/config/config.json`. Mount `/config` to a host volume to keep the account across restarts.
 
-```yaml
-services:
-  warp-masque:
-    image: ghcr.io/akumaginkou/warp-masque:latest
-    restart: always
-    environment:
-      - HTTP_PORT=1081
-    volumes:
-      - ./config:/config
-    ports:
-      - 127.0.0.1:1080:1080
-      - 127.0.0.1:1081:1081
-```
+## Why MASQUE?
 
-On first boot the container runs `usque register` and writes `/config/config.json`. Mount `/config` to a host volume to persist the account across restarts.
+- **DPI / UDP-blocking networks**: corporate, mobile, in-flight, and some ISPs drop WireGuard. The official Cloudflare app gave up WireGuard for MASQUE first; this image follows.
+- **`USE_HTTP2=true`** falls all the way back to TLS-over-TCP, which traverses almost anything that lets HTTPS out.
+- **No `WARP_PLUS` farming**. Cloudflare killed the referral API on 2024-11-01 (error `1070`). Free WARP is unmetered and still works.
 
-## Environment variables
+## Configuration
+
+### Basic
 
 | ENV | Description | Default |
 |---|---|---|
-| `SOCKS5_PORT` | Port for the SOCKS5 listener | `1080` |
-| `HTTP_PORT` | If set, also start an HTTP CONNECT proxy on this port | (unset) |
-| `USERNAME` | Optional SOCKS5/HTTP proxy username | (unset) |
-| `PASSWORD` | Optional SOCKS5/HTTP proxy password | (unset) |
-| `DNS` | Comma-separated upstream DNS list (forwarded as `-d`) | (unset, usque default) |
-| `USE_HTTP2` | `true` to force HTTP/2 over TCP+TLS (use when QUIC is blocked) | `false` |
-| `DEVICE_NAME` | Friendly name passed to `usque register -n` on first boot. With pooling, account #i gets `${DEVICE_NAME}-${i}` | (unset) |
-| `ACCOUNT_COUNT` | Provision N free accounts and pool them behind an internal HAProxy (TCP roundrobin + per-backend failover). `1` = legacy single-account mode. | `1` |
-| `HAPROXY_STATS_PORT` | Pool mode only. If set, expose HAProxy's stats page on this port (HTTP, plain). Pair with `HAPROXY_STATS_USER`/`HAPROXY_STATS_PASS` for Basic auth. | (unset, disabled) |
-| `HAPROXY_STATS_USER` / `HAPROXY_STATS_PASS` | Optional Basic auth credentials for the stats page. | (unset) |
+| `SOCKS5_PORT` | Public SOCKS5 listener port | `1080` |
+| `HTTP_PORT` | If set, also expose an HTTP CONNECT proxy on this port | — |
+| `USERNAME` / `PASSWORD` | Optional proxy auth (shared by SOCKS5 and HTTP) | — |
+| `DNS` | Comma-separated upstream resolvers (`-d` per entry) | usque default |
+| `USE_HTTP2` | `true` to force HTTP/2-over-TLS (use when QUIC is blocked) | `false` |
+| `DEVICE_NAME` | Name passed to `usque register -n`. In pool mode, worker `i` becomes `${DEVICE_NAME}-${i}` | — |
 | `TZ` | Container timezone | `UTC` |
 
-## Multi-account pooling
+### Pool mode (advanced)
 
-Set `ACCOUNT_COUNT=N` (N ≥ 2) to provision N independent free WARP accounts on first boot and run them in parallel behind an internal HAProxy. Each new client connection on the public SOCKS5 port is round-robined to a different account, distributing per-account rate limits and identification. Per-backend TCP health checks plus HAProxy's `option redispatch` give automatic failover if any individual `usque` worker becomes unreachable — the connection retries on the next live backend.
+| ENV | Description | Default |
+|---|---|---|
+| `ACCOUNT_COUNT` | Number of independent free accounts to provision and run in parallel | `1` |
+| `HAPROXY_STATS_PORT` | Expose HAProxy's stats page on this port (pool mode only) | — |
+| `HAPROXY_STATS_USER` / `HAPROXY_STATS_PASS` | Basic auth for the stats page | — |
+
+## Pool mode
+
+Set `ACCOUNT_COUNT=N` (N ≥ 2) and the image:
+
+- Registers N independent free WARP accounts on first boot.
+- Runs N `usque socks` workers (and N `usque http-proxy` if `HTTP_PORT` is set), each with its own MASQUE tunnel.
+- Fronts the public ports with HAProxy in TCP roundrobin + per-backend health checks + `option redispatch`.
+
+```
+client ─▶ :SOCKS5_PORT ─▶ HAProxy ─┬─▶ usque #1 ─▶ MASQUE ─▶ Cloudflare
+                                   ├─▶ usque #2 ─▶ MASQUE ─▶ Cloudflare
+                                   └─▶ usque #N ─▶ MASQUE ─▶ Cloudflare
+```
+
+Example:
 
 ```yaml
 services:
@@ -67,46 +70,49 @@ services:
     environment:
       - ACCOUNT_COUNT=3
       - HTTP_PORT=1081
+      - HAPROXY_STATS_PORT=8404
     volumes:
-      - ./config:/config   # persists all N account credentials
+      - ./config:/config
     ports:
       - 127.0.0.1:1080:1080
       - 127.0.0.1:1081:1081
+      - 127.0.0.1:8404:8404
 ```
 
-Internally:
-- Worker `i` binds `127.0.0.1:1100i` (SOCKS5) and `127.0.0.1:1200i` (HTTP, if `HTTP_PORT` set).
-- HAProxy fronts `:${SOCKS5_PORT}` and `:${HTTP_PORT}` with `balance roundrobin`.
-- Account #1 stays in `/config/config.json` (so upgrades from single-account deployments keep working); accounts #2..N live in `/config/config-{2..N}.json`.
+What you get:
 
-`N=1` (the default) bypasses HAProxy entirely and binds `usque` directly to the public ports — no extra hop, no behavior change from the single-account image.
+- **Rate-limit distribution** — each new client TCP connection gets the next account in the rotation.
+- **Failover** — if a worker stops responding to TCP health checks, HAProxy stops sending it traffic and retries the request on a healthy backend (`option redispatch`).
+- **Per-worker restart** — workers run under independent supervisors with exponential backoff (1 s → 30 s cap). One crashing process doesn't take the rest down.
 
-Each worker has its own restart loop with exponential backoff (up to 30 s), so a single misbehaving `usque` process no longer takes down the rest of the pool while it cycles.
+### Internals
 
-### Observability
+- Worker `i` binds `127.0.0.1:1100i` (SOCKS5) and `127.0.0.1:1200i` (HTTP).
+- Account #1 stays in `/config/config.json` so single-account deployments upgrade in place; accounts #2..N live in `/config/config-{2..N}.json`.
+- `ACCOUNT_COUNT=1` (default) bypasses HAProxy entirely and binds `usque` directly to the public ports.
 
-When `HAPROXY_STATS_PORT` is set in pool mode, HAProxy's built-in stats page is published on that port. Open `http://host:${HAPROXY_STATS_PORT}/` to see per-backend session counts, bytes in/out, last health-check result, and the current up/down state. Add Basic auth with `HAPROXY_STATS_USER` and `HAPROXY_STATS_PASS` before exposing the port publicly.
+## Observability
 
-### Healthcheck
+`HAPROXY_STATS_PORT` publishes HAProxy's built-in stats page (per-backend session counts, bytes in/out, last health check, up/down state, request rate). Pair with `HAPROXY_STATS_USER` / `HAPROXY_STATS_PASS` for Basic auth before exposing it past localhost.
 
-The container HEALTHCHECK validates two things:
+The container `HEALTHCHECK` runs every 25 s and combines:
 
-1. The public SOCKS5 listener can complete a real request to `cloudflare.com/cdn-cgi/trace`.
-2. In pool mode, each worker's internal port is still accepting TCP. Up to ⌊N/2⌋ dead workers are tolerated; the container only flips to `unhealthy` once a majority of the pool has stopped listening. This avoids container restart cascades when individual workers are transiently down — HAProxy redispatch keeps user-visible behavior intact during the survivors' lifetime.
+1. End-to-end SOCKS5 probe against `cloudflare.com/cdn-cgi/trace`.
+2. (Pool mode) TCP probe of each worker's internal port. The container goes `unhealthy` only when **more than ⌊N/2⌋ workers stop listening** — a single flaky worker doesn't trigger a container restart that would kill the surviving majority.
 
-## Verifying
+## Caveats
 
-```sh
-curl -sx socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace
-# expect: warp=on
-```
+- **Connection-level roundrobin**, not request-level. A long-lived SOCKS5 connection stays on the same backend for its lifetime.
+- **Egress IP ≠ account identity**. Cloudflare pools egress IPs internally; two of your accounts may surface from the same WARP edge address.
+- **Paid WARP+ license keys** aren't supported yet — tracking [usque#87](https://github.com/Diniboy1123/usque/issues/87).
+- **No identity rotation** in this version. Accounts persist until you delete the corresponding `config*.json` from the volume.
 
-## Notes
+## Acknowledgements
 
-- `WARP_PLUS` quota farming is **not implemented** and will not be — the API behind it is gone.
-- License key (paid WARP+) injection is **not yet supported** upstream in usque ([issue #87](https://github.com/Diniboy1123/usque/issues/87)).
-- Pool members are connection-level round-robin (HAProxy `mode tcp`), not request-level. A long-lived SOCKS5 connection stays on the same backend for its lifetime.
+- [`Diniboy1123/usque`](https://github.com/Diniboy1123/usque) — the underlying MASQUE/WARP client.
+- [`linuxserver/baseimage-alpine`](https://github.com/linuxserver/docker-baseimage-alpine) — base image + s6-overlay scaffolding.
+- [`akumaginkou/warproxy`](https://github.com/akumaginkou/warproxy) — the wireproxy-based predecessor.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
