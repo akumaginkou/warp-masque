@@ -1,17 +1,90 @@
 #!/usr/bin/with-contenv bash
 set -e
 
-CONFIG=/config/config.json
+# Number of free WARP accounts to provision and pool. Default 1
+# (single-account direct mode, no HAProxy). When >=2, the container
+# runs N usque workers on internal ports and fronts them with HAProxy
+# on SOCKS5_PORT (and HTTP_PORT if set).
+N="${ACCOUNT_COUNT:-1}"
+if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -lt 1 ]; then
+  echo "*** ACCOUNT_COUNT must be a positive integer, got '$N'; defaulting to 1" >&2
+  N=1
+fi
 
-if [ ! -e "$CONFIG" ]; then
-  echo "*** usque: registering a new free WARP account..."
-  cd /config
-  if [ -n "$DEVICE_NAME" ]; then
-    /usr/local/bin/usque register -n "$DEVICE_NAME" --accept-tos
+mkdir -p /config
+cd /config
+
+register_one() {
+  local cfg="$1" name="$2"
+  if [ -e "$cfg" ]; then
+    return 0
+  fi
+  echo "*** usque: registering free account -> $cfg"
+  if [ -n "$name" ]; then
+    /usr/local/bin/usque register --accept-tos -c "$cfg" -n "$name"
   else
-    /usr/local/bin/usque register --accept-tos
+    /usr/local/bin/usque register --accept-tos -c "$cfg"
+  fi
+}
+
+# Slot 1 is always config.json (preserves single-account semantics +
+# upgrade path from v1 deployments).
+register_one /config/config.json "${DEVICE_NAME}"
+
+# Pool members 2..N go to config-2.json .. config-N.json. Sleep
+# briefly between calls to be polite to api.cloudflareclient.com.
+if [ "$N" -ge 2 ]; then
+  for i in $(seq 2 "$N"); do
+    register_one "/config/config-${i}.json" "${DEVICE_NAME:+${DEVICE_NAME}-${i}}"
+    sleep 1
+  done
+fi
+
+# Generate /config/haproxy.cfg when pooling.
+if [ "$N" -ge 2 ]; then
+  cat > /config/haproxy.cfg <<HEAD
+global
+    log stdout format raw daemon info
+    maxconn 4096
+
+defaults
+    mode tcp
+    log global
+    option dontlognull
+    option tcp-check
+    retries 3
+    option redispatch
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+
+frontend socks5_in
+    bind *:${SOCKS5_PORT}
+    default_backend socks5_pool
+
+backend socks5_pool
+    balance roundrobin
+HEAD
+  echo "    server u1 127.0.0.1:11001 check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
+  for i in $(seq 2 "$N"); do
+    echo "    server u${i} 127.0.0.1:$((11000+i)) check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
+  done
+
+  if [ -n "$HTTP_PORT" ]; then
+    cat >> /config/haproxy.cfg <<HTTPF
+
+frontend http_in
+    bind *:${HTTP_PORT}
+    default_backend http_pool
+
+backend http_pool
+    balance roundrobin
+HTTPF
+    echo "    server u1 127.0.0.1:12001 check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
+    for i in $(seq 2 "$N"); do
+      echo "    server u${i} 127.0.0.1:$((12000+i)) check inter 5s fall 3 rise 2" >> /config/haproxy.cfg
+    done
   fi
 fi
 
-# permissions — service runs as abc:abc (uid 911 by default)
 chown -R abc:abc /config

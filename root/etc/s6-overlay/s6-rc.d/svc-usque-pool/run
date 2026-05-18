@@ -1,0 +1,63 @@
+#!/usr/bin/with-contenv bash
+
+N="${ACCOUNT_COUNT:-1}"
+if [ "$N" -lt 2 ]; then
+    # Single-account mode: svc-socks/svc-http handle traffic directly.
+    s6-svc -d .
+    exit 0
+fi
+
+# Build the per-instance argv tail (auth, DNS, http2). Shared by all
+# pool members since they speak the same SOCKS5/HTTP interface to
+# HAProxy.
+socks_tail=()
+http_tail=()
+[ -n "$USERNAME" ] && { socks_tail+=(-u "$USERNAME"); http_tail+=(-u "$USERNAME"); }
+[ -n "$PASSWORD" ] && { socks_tail+=(-w "$PASSWORD"); http_tail+=(-w "$PASSWORD"); }
+if [ -n "$DNS" ]; then
+    IFS=',' read -ra _dns <<<"$DNS"
+    for d in "${_dns[@]}"; do
+        socks_tail+=(-d "$d")
+        http_tail+=(-d "$d")
+    done
+fi
+if [ "$USE_HTTP2" = "true" ]; then
+    socks_tail+=(--http2)
+    http_tail+=(--http2)
+fi
+
+pids=()
+cleanup() { kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null || true; }
+trap 'cleanup; exit 0' TERM INT
+trap 'cleanup' EXIT
+
+config_for() {
+    if [ "$1" = "1" ]; then echo /config/config.json
+    else echo /config/config-$1.json
+    fi
+}
+
+for i in $(seq 1 "$N"); do
+    cfg=$(config_for "$i")
+    socks_port=$((11000+i))
+    echo "*** usque-pool: starting socks worker $i on 127.0.0.1:${socks_port} (${cfg})"
+    s6-setuidgid abc /usr/local/bin/usque socks \
+        -c "$cfg" -b 127.0.0.1 -p "$socks_port" "${socks_tail[@]}" &
+    pids+=("$!")
+
+    if [ -n "$HTTP_PORT" ]; then
+        http_port=$((12000+i))
+        echo "*** usque-pool: starting http worker $i on 127.0.0.1:${http_port}"
+        s6-setuidgid abc /usr/local/bin/usque http-proxy \
+            -c "$cfg" -b 127.0.0.1 -p "$http_port" "${http_tail[@]}" &
+        pids+=("$!")
+    fi
+done
+
+# Wait for any one to exit, then have s6 restart the whole pool.
+# HAProxy's per-backend health checks + redispatch keep clients
+# unaffected during the brief restart window.
+wait -n
+echo "*** usque-pool: a worker exited; cycling the pool" >&2
+cleanup
+exit 1

@@ -3,6 +3,9 @@ services:
     image: ghcr.io/akumaginkou/warp-masque:latest
     restart: always
     environment:
+      # Optional: provision N accounts and pool them behind HAProxy
+      # (roundrobin + per-backend failover). Default 1 = single account.
+      - ACCOUNT_COUNT=3
       - HTTP_PORT=1081
     volumes:
       - ./config:/config

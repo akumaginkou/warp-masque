@@ -1,0 +1,10 @@
+#!/usr/bin/with-contenv bash
+
+if [ "${ACCOUNT_COUNT:-1}" -lt 2 ]; then
+    # No pooling needed; HAProxy stays down.
+    s6-svc -d .
+    exit 0
+fi
+
+# init-prepare wrote /config/haproxy.cfg with one backend per account.
+exec s6-setuidgid abc /usr/sbin/haproxy -W -db -f /config/haproxy.cfg
