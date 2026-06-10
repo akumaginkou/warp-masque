@@ -15,7 +15,9 @@ if [ ! -e /dev/net/tun ]; then
     exit 1
 fi
 
-cmd=(/usr/local/bin/usque nativetun -c /config/config.json)
+# --always-reconnect keeps the tunnel warm so the gateway stays routable
+# instead of dropping to idle and re-dialing on the next outbound packet.
+cmd=(/usr/local/bin/usque nativetun -c /config/config.json --always-reconnect)
 
 [ "$USE_HTTP2" = "true" ] && cmd+=(--http2)
 

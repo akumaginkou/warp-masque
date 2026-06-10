@@ -8,7 +8,13 @@ FROM ghcr.io/linuxserver/baseimage-alpine:${ALPINE_VER} AS base
 #--------------#
 
 FROM golang:${GOLANG_VER}-alpine${ALPINE_VER} AS usque-builder
-RUN go install -ldflags="-s -w" github.com/Diniboy1123/usque@latest
+# Pinned past v1.5.0: the tagged release lacks the --http2 flag that
+# USE_HTTP2 relies on (it only landed on the upstream main branch after
+# v1.5.0). Pinning to the commit keeps the build reproducible while
+# giving us both --http2 (HTTP/2-over-TCP fallback) and --always-reconnect
+# (warm tunnel; see the s6 svc-* run scripts).
+ARG USQUE_REF=827ebf177da2
+RUN go install -ldflags="-s -w" github.com/Diniboy1123/usque@${USQUE_REF}
 
 #--------------#
 
