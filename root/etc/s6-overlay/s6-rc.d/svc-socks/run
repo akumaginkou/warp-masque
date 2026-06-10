@@ -7,10 +7,16 @@ if [ "${ACCOUNT_COUNT:-1}" -ge 2 ] || [ "${MODE:-proxy}" = "tun" ]; then
     exit 0
 fi
 
+# --always-reconnect keeps the MASQUE tunnel warm. Without it, recent
+# usque tears the tunnel down when idle and re-establishes on the next
+# outbound packet, so each new connection eats a cold-reconnect latency
+# spike and frequently fails its first attempt (EOF / PROTOCOL_VIOLATION
+# / DNS i/o timeout). A long-lived proxy wants the tunnel always up.
 cmd=(/usr/local/bin/usque socks
      -c /config/config.json
      -b 0.0.0.0
-     -p "${SOCKS5_PORT}")
+     -p "${SOCKS5_PORT}"
+     --always-reconnect)
 
 [ -n "$USERNAME" ] && cmd+=(-u "$USERNAME")
 [ -n "$PASSWORD" ] && cmd+=(-w "$PASSWORD")

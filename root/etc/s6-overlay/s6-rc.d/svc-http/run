@@ -8,10 +8,13 @@ if [ -z "$HTTP_PORT" ] || [ "${ACCOUNT_COUNT:-1}" -ge 2 ] || [ "${MODE:-proxy}" 
     exit 0
 fi
 
+# --always-reconnect keeps the MASQUE tunnel warm; see svc-socks/run for
+# why the default idle-disconnect behavior breaks a long-lived proxy.
 cmd=(/usr/local/bin/usque http-proxy
      -c /config/config.json
      -b 0.0.0.0
-     -p "${HTTP_PORT}")
+     -p "${HTTP_PORT}"
+     --always-reconnect)
 
 [ -n "$USERNAME" ] && cmd+=(-u "$USERNAME")
 [ -n "$PASSWORD" ] && cmd+=(-w "$PASSWORD")

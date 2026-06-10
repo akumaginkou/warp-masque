@@ -10,8 +10,13 @@ fi
 
 # Build the per-instance argv tail (auth, DNS, http2). All pool members
 # share the same SOCKS5/HTTP surface seen by HAProxy.
-socks_tail=()
-http_tail=()
+# --always-reconnect keeps each worker's MASQUE tunnel warm. Without it,
+# recent usque tears the tunnel down when idle and re-establishes on the
+# next outbound packet — fatal in pool mode, where HAProxy's roundrobin
+# and health checks assume every backend is ready, and a cold reconnect
+# fails the first request (EOF / PROTOCOL_VIOLATION / DNS i/o timeout).
+socks_tail=(--always-reconnect)
+http_tail=(--always-reconnect)
 [ -n "$USERNAME" ] && { socks_tail+=(-u "$USERNAME"); http_tail+=(-u "$USERNAME"); }
 [ -n "$PASSWORD" ] && { socks_tail+=(-w "$PASSWORD"); http_tail+=(-w "$PASSWORD"); }
 if [ -n "$DNS" ]; then
